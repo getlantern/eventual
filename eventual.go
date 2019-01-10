@@ -19,11 +19,20 @@ type Value interface {
 	// Set sets this Value to the given val.
 	Set(val interface{})
 
+	// SetIfEmpty sets this Value to the given val if and only if this Value
+	// hasn't yet been set and returns true if the new value was set.
+	SetIfEmpty(val interface{}) bool
+
 	// Get waits up to timeout for the value to be set and returns it, or returns
 	// nil if it times out or Cancel() is called. valid will be false in latter
 	// case. If timeout is 0, Get won't wait. If timeout is -1, Get will wait
 	// forever.
 	Get(timeout time.Duration) (ret interface{}, valid bool)
+
+	// GetOrInit is like Get but if it hasn't obtained a value within initAfter,
+	// it will run the given initializer function on a goroutine in order to
+	// initialize the value.
+	GetOrInit(timeout time.Duration, initAfter time.Duration, init func(Value)) (ret interface{}, valid bool)
 
 	// Cancel cancels this value, signaling any waiting calls to Get() that no
 	// value is coming. If no value was set before Cancel() was called, all future
@@ -69,11 +78,19 @@ func DefaultUnsetGetter() Getter {
 }
 
 func (v *value) Set(val interface{}) {
+	v.set(val, false)
+}
+
+func (v *value) SetIfEmpty(val interface{}) bool {
+	return v.set(val, true)
+}
+
+func (v *value) set(val interface{}, onlyIfEmpty bool) bool {
 	v.mutex.Lock()
 	defer v.mutex.Unlock()
 
 	state := v.getState()
-	settable := !state.canceled
+	settable := !state.canceled && (!onlyIfEmpty || !state.set)
 	if settable {
 		v.setState(&stateholder{
 			val:      val,
@@ -89,7 +106,11 @@ func (v *value) Set(val interface{}) {
 			// Clear waiters
 			v.waiters = nil
 		}
+
+		return true
 	}
+
+	return false
 }
 
 func (v *value) Cancel() {
@@ -114,6 +135,10 @@ func (v *value) Cancel() {
 }
 
 func (v *value) Get(timeout time.Duration) (ret interface{}, valid bool) {
+	return v.GetOrInit(timeout, 0, nil)
+}
+
+func (v *value) GetOrInit(timeout time.Duration, initAfter time.Duration, init func(Value)) (ret interface{}, valid bool) {
 	state := v.getState()
 
 	// First check for existing value using atomic operations (for speed)
@@ -154,13 +179,35 @@ func (v *value) Get(timeout time.Duration) (ret interface{}, valid bool) {
 	v.waiters = append(v.waiters, valCh)
 	v.mutex.Unlock()
 
+	var remainingTimeout time.Duration
+	runInitializer := init != nil
+	if runInitializer {
+		// Since we'll run an initializer eventually, reduce the initial timeout to
+		// initAfter and record the remaining timeout for after we've run the
+		// initializer.
+		remainingTimeout = timeout - initAfter
+		timeout = initAfter
+	}
+
 	// Wait up to timeout for value to get set
 	select {
 	case v, ok := <-valCh:
 		return v, ok
 	case <-time.After(timeout):
-		return nil, false
+		if runInitializer {
+			// Run the initializer and then try again
+			go init(v)
+			select {
+			case v, ok := <-valCh:
+				return v, ok
+			case <-time.After(remainingTimeout):
+				return nil, false
+			}
+		}
 	}
+
+	// We'll never actually reach this, just need it to make compiler happy
+	return nil, false
 }
 
 func (v *value) getState() *stateholder {

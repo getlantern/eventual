@@ -41,6 +41,22 @@ func TestSingle(t *testing.T) {
 	goroutines.CheckAfter(t, 50*time.Millisecond)
 }
 
+func TestSetIfEmpty(t *testing.T) {
+	v := NewValue()
+
+	assert.True(t, v.SetIfEmpty("a"))
+	r, _ := v.Get(-1)
+	assert.Equal(t, "a", r, "value should have been set")
+
+	assert.False(t, v.SetIfEmpty("b"))
+	r, _ = v.Get(-1)
+	assert.Equal(t, "a", r, "value should remain unchanged")
+
+	v.Set("c")
+	r, _ = v.Get(-1)
+	assert.Equal(t, "c", r, "value should have changed")
+}
+
 func TestNoSet(t *testing.T) {
 	goroutines := grtrack.Start()
 	v := NewValue()
@@ -77,6 +93,44 @@ func TestCancelAfterSet(t *testing.T) {
 	v.Set(10)
 	r, _ = v.Get(0)
 	assert.Equal(t, 5, r, "Set after cancel should have no effect")
+}
+
+func TestGetOrInit(t *testing.T) {
+	v := NewValue()
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		v.Set("final")
+	}()
+
+	callsToInit := int64(0)
+	init := func(Value) {
+		atomic.AddInt64(&callsToInit, 1)
+		v.SetIfEmpty("default")
+	}
+
+	r, ok := v.GetOrInit(0, 0, init)
+	assert.False(t, ok)
+	assert.EqualValues(t, 0, atomic.LoadInt64(&callsToInit), "should not yet have called init")
+
+	r, ok = v.GetOrInit(100*time.Millisecond, 0, init)
+	if assert.True(t, ok) {
+		assert.Equal(t, "default", r, "should get default while final is unavailable")
+		assert.EqualValues(t, 1, atomic.LoadInt64(&callsToInit), "should have called init once")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	r, ok = v.GetOrInit(250*time.Millisecond, 150*time.Millisecond, init)
+	if assert.True(t, ok) {
+		assert.Equal(t, "default", r, "should wait for final")
+		assert.EqualValues(t, 1, atomic.LoadInt64(&callsToInit), "should not have called init again")
+	}
+
+	time.Sleep(250 * time.Millisecond)
+	r, ok = v.GetOrInit(250*time.Millisecond, 0, init)
+	if assert.True(t, ok) {
+		assert.Equal(t, "final", r, "should get final once immediately available")
+		assert.EqualValues(t, 1, atomic.LoadInt64(&callsToInit), "should not have called init again")
+	}
 }
 
 func BenchmarkGet(b *testing.B) {

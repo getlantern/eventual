@@ -127,7 +127,7 @@ func TestConcurrent(t *testing.T) {
 }
 
 // Honestly, this test is only here because it allows us to reach 100% coverage =D
-func TestWithefault(t *testing.T) {
+func TestWithDefault(t *testing.T) {
 	const (
 		timeUntilSet = 20 * time.Millisecond
 		defaultValue = "default value"

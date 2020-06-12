@@ -31,7 +31,7 @@ type Value interface {
 
 // NewValue creates a new value.
 func NewValue() Value {
-	return &value{nil, newCond()}
+	return &value{&sync.Mutex{}, nil, false, nil}
 }
 
 // WithDefault creates a new value set to the input default.
@@ -42,68 +42,42 @@ func WithDefault(defaultValue interface{}) Value {
 }
 
 type value struct {
-	v     interface{}
-	isSet *cond
+	sync.Locker
+	v       interface{}
+	set     bool
+	waiters []chan interface{}
 }
 
 func (v *value) Set(i interface{}) {
-	v.isSet.Lock()
+	v.Lock()
 	v.v = i
-	v.isSet.broadcast()
-	v.isSet.Unlock()
+	if !v.set {
+		// This is our first time setting, inform anyone who is waiting
+		for _, waiter := range v.waiters {
+			waiter <- i
+		}
+		v.set = true
+	}
+	v.Unlock()
 }
 
 func (v *value) Get(ctx context.Context) (interface{}, error) {
-	v.isSet.Lock()
-	for v.v == nil {
-		// cond.wait releases the lock. The lock is returned iff err == nil.
-		if err := v.isSet.wait(ctx); err != nil {
-			return nil, err
-		}
+	v.Lock()
+	if v.set {
+		// Value already set, use existing
+		_v := v.v
+		v.Unlock()
+		return _v, nil
 	}
-	_v := v.v
-	v.isSet.Unlock()
-	return _v, nil
-}
 
-// cond is like sync.Cond, but accepts a context when waiting.
-type cond struct {
-	sync.Locker
-	signaled bool
-	waiters  []chan struct{}
-}
-
-func newCond() *cond {
-	return &cond{&sync.Mutex{}, false, []chan struct{}{}}
-}
-
-// wait for the signal. c.Locker MUST be held when this function is called.
-//
-// In general, wait behaves like sync.Cond.Wait and returns nil. However, if the context expires
-// before the condition is signaled, then an error is returned and the calling goroutine will NOT
-// hold c.Locker.
-func (c *cond) wait(ctx context.Context) error {
-	if c.signaled {
-		return nil
-	}
-	waitChan := make(chan struct{})
-	c.waiters = append(c.waiters, waitChan)
-	c.Unlock()
+	// Value not yet set, wait
+	waiter := make(chan interface{}, 1)
+	v.waiters = append(v.waiters, waiter)
+	v.Unlock()
 	select {
-	case <-waitChan:
-		c.Lock()
-		return nil
+	case _v := <-waiter:
+		return _v, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-}
-
-// broadcast behaves like sync.Cond.Broadcast, with the exception that c.Locker MUST be held when
-// this function is called. The lock will still be held when this function returns.
-func (c *cond) broadcast() {
-	c.signaled = true
-	for _, waitChan := range c.waiters {
-		close(waitChan)
-	}
-	c.waiters = []chan struct{}{}
 }

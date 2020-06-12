@@ -127,16 +127,32 @@ func TestConcurrent(t *testing.T) {
 }
 
 // Honestly, this test is only here because it allows us to reach 100% coverage =D
-func TestWithDefault(t *testing.T) {
-	v := WithDefault("default")
-	r, err := v.Get(context.Background())
-	require.NoError(t, err)
-	require.Equal(t, "default", r)
+func TestWithefault(t *testing.T) {
+	const (
+		timeUntilSet = 20 * time.Millisecond
+		defaultValue = "default value"
+		initialValue = "initial value"
+	)
 
-	v.Set("new")
-	r, err = v.Get(context.Background())
+	goroutines := grtrack.Start()
+	v := WithDefault(defaultValue)
+	go func() {
+		time.Sleep(timeUntilSet)
+		v.Set(initialValue)
+	}()
+
+	shortTimeoutCtx, cancel := context.WithTimeout(context.Background(), timeUntilSet/2)
+	defer cancel()
+
+	result, err := v.Get(shortTimeoutCtx)
+	require.NoError(t, err, "Get with short timeout should have gotten no error")
+	require.Equal(t, defaultValue, result, "Get with short timeout should have gotten default value")
+
+	result, err = v.Get(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, "new", r)
+	require.Equal(t, initialValue, result)
+
+	goroutines.CheckAfter(t, 50*time.Millisecond)
 }
 
 func BenchmarkGet(b *testing.B) {

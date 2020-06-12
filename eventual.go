@@ -31,21 +31,20 @@ type Value interface {
 
 // NewValue creates a new value.
 func NewValue() Value {
-	return &value{&sync.Mutex{}, nil, false, nil}
+	return &value{&sync.Mutex{}, nil, nil, false, nil}
 }
 
-// WithDefault creates a new value set to the input default.
+// WithDefault creates a new value that returns the given defaultValue if a real value isn't available in time.
 func WithDefault(defaultValue interface{}) Value {
-	v := NewValue()
-	v.Set(defaultValue)
-	return v
+	return &value{&sync.Mutex{}, nil, defaultValue, false, nil}
 }
 
 type value struct {
 	sync.Locker
-	v       interface{}
-	set     bool
-	waiters []chan interface{}
+	v            interface{}
+	defaultValue interface{}
+	set          bool
+	waiters      []chan interface{}
 }
 
 func (v *value) Set(i interface{}) {
@@ -78,6 +77,9 @@ func (v *value) Get(ctx context.Context) (interface{}, error) {
 	case _v := <-waiter:
 		return _v, nil
 	case <-ctx.Done():
+		if v.defaultValue != nil {
+			return v.defaultValue, nil
+		}
 		return nil, ctx.Err()
 	}
 }

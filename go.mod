@@ -1,4 +1,4 @@
-module github.com/getlantern/eventual
+module github.com/getlantern/eventual/v2
 
 go 1.13
 
